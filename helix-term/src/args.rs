@@ -19,6 +19,7 @@ pub struct Args {
     pub config_file: Option<PathBuf>,
     pub files: IndexMap<PathBuf, Vec<Position>>,
     pub working_directory: Option<PathBuf>,
+    pub remote: bool,
 }
 
 impl Args {
@@ -74,6 +75,7 @@ impl Args {
                     Some(path) => args.log_file = Some(path.into()),
                     None => anyhow::bail!("--log must specify a path to write"),
                 },
+                "-r" | "--remote" => args.remote = true,
                 "-w" | "--working-dir" => match argv.next().as_deref() {
                     Some(path) => {
                         args.working_directory = if Path::new(path).is_dir() {

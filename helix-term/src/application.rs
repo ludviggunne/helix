@@ -1,6 +1,7 @@
+use crate::remote;
 use arc_swap::{access::Map, ArcSwap};
 use futures_util::Stream;
-use helix_core::{diagnostic::Severity, pos_at_coords, syntax, Range, Selection};
+use helix_core::{diagnostic::Severity, pos_at_coords, syntax, Position, Range, Selection};
 use helix_lsp::{
     lsp::{self, notification::Notification},
     util::lsp_range_to_range,
@@ -33,7 +34,13 @@ use crate::{
 use log::{debug, error, info, warn};
 #[cfg(not(feature = "integration"))]
 use std::io::stdout;
-use std::{collections::btree_map::Entry, io::stdin, path::Path, sync::Arc};
+use std::{
+    collections::btree_map::Entry,
+    io::stdin,
+    os::{fd::AsFd, unix::net::UnixListener},
+    path::Path,
+    sync::Arc,
+};
 
 #[cfg(not(windows))]
 use anyhow::Context;
@@ -63,6 +70,8 @@ pub struct Application {
     compositor: Compositor,
     terminal: Terminal,
     pub editor: Editor,
+
+    listener: remote::UnixListenerWrapper,
 
     config: Arc<ArcSwap<Config>>,
 
@@ -259,10 +268,14 @@ impl Application {
         ])
         .context("build signal handler")?;
 
+        let listener = remote::UnixListenerWrapper::bind(std::process::id())?;
+
         let app = Self {
             compositor,
             terminal,
             editor,
+
+            listener,
 
             config,
 
@@ -341,6 +354,25 @@ impl Application {
                     if !self.handle_signals(signal).await {
                         return false;
                     };
+                }
+                Ok((filename, offset)) = self.listener.accept() => {
+                    let _ = offset;
+                    let path = Path::new(filename.as_str());
+                    let action = helix_view::editor::Action::Replace;
+                    match self.editor.open(path, action) {
+                        Err(e) => self.editor.set_error(format!("Open file failed: {:?}", e)),
+                        Ok(id) => {
+                            self.editor.switch(id, action);
+                            let view_id = self.editor.tree.focus;
+                            let doc = doc_mut!(self.editor, &id);
+                            let pos = Position { row: offset, col: 0 };
+                            let selection: Selection = Range::point(pos_at_coords(doc.text().slice(..), pos, true)).into();
+                            doc.set_selection(view_id, selection);
+                            let (view, doc) = current!(self.editor);
+                            align_view(doc, view, Align::Center);
+                            self.render().await;
+                        }
+                    }
                 }
                 Some(event) = input_stream.next() => {
                     self.handle_terminal_events(event).await;
